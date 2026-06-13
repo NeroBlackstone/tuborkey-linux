@@ -24,12 +24,13 @@ func nextToken(prefix string) string {
 
 // waitForPortalResponse 等待 portal 的 Response signal
 func waitForPortalResponse(conn *dbus.Conn, requestPath dbus.ObjectPath, timeout time.Duration) (uint32, map[string]dbus.Variant, error) {
-	rule := fmt.Sprintf("type='signal',interface='%s',path='%s',member='Response'", reqIface, string(requestPath))
-	conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, rule)
-
+	// 先注册信号通道，再 AddMatch，防止信号在两者之间到达时被丢弃
 	ch := make(chan *dbus.Signal, 10)
 	conn.Signal(ch)
 	defer conn.RemoveSignal(ch)
+
+	rule := fmt.Sprintf("type='signal',interface='%s',path='%s',member='Response'", reqIface, string(requestPath))
+	conn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, rule)
 
 	select {
 	case sig := <-ch:
