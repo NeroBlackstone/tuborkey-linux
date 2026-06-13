@@ -17,21 +17,19 @@ go build -o tuborkey .
 |------|--------|------|
 | `-key` | `j` | 连发按键，支持键名 (j/k/space/enter 等) 或 evdev code (如 36) |
 | `-interval` | `50` | 连发间隔，单位毫秒 |
+| `-toggle` | `0` | 开关快捷键，支持键名 (f1/scrolllock/0 等) 或 evdev code |
 
 ### 示例
 
 ```bash
-# 默认：按住 J 连发，50ms 间隔
+# 默认：0 键开关连发，按住 J 连发，50ms 间隔
 ./tuborkey
 
-# 按住 K 连发
-./tuborkey -key k
+# F1 开关连发，按住 K 连发
+./tuborkey -toggle f1 -key k
 
-# 按住空格连发，30ms 间隔
-./tuborkey -key space -interval 30
-
-# 直接指定 evdev code
-./tuborkey -key 36
+# ScrollLock 开关，按住空格连发，30ms 间隔
+./tuborkey -toggle scrolllock -key space -interval 30
 ```
 
 ## 权限
