@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -18,12 +19,37 @@ const (
 	portalIface = "org.freedesktop.portal.RemoteDesktop"
 	reqIface    = "org.freedesktop.portal.Request"
 
-	keyJ = 36 // evdev keycode
-
-	// evdev
-	evKey       = 0x01
-	rapidFireMs = 50 // 连发间隔 (毫秒)
+	evKey = 0x01
 )
+
+// keyMap 键名 → evdev keycode 映射
+var keyMap = map[string]uint32{
+	"a": 30, "b": 48, "c": 46, "d": 32, "e": 18, "f": 33,
+	"g": 34, "h": 35, "i": 23, "j": 36, "k": 37, "l": 38,
+	"m": 50, "n": 49, "o": 24, "p": 25, "q": 16, "r": 19,
+	"s": 31, "t": 20, "u": 22, "v": 47, "w": 17, "x": 45,
+	"y": 21, "z": 44,
+	"space": 57, "enter": 28, "esc": 1, "tab": 15,
+	"shift": 42, "ctrl": 29, "alt": 56,
+	"up": 103, "down": 108, "left": 105, "right": 106,
+	"f1": 59, "f2": 60, "f3": 61, "f4": 62, "f5": 63,
+	"f6": 64, "f7": 65, "f8": 66, "f9": 67, "f10": 68,
+	"f11": 87, "f12": 88,
+}
+
+// parseKey 将键名或数字转为 evdev keycode
+func parseKey(s string) (uint32, error) {
+	// 先尝试数字 (直接指定 evdev code)
+	var code uint32
+	if _, err := fmt.Sscanf(s, "%d", &code); err == nil {
+		return code, nil
+	}
+	// 再查映射表
+	if code, ok := keyMap[strings.ToLower(s)]; ok {
+		return code, nil
+	}
+	return 0, fmt.Errorf("未知按键: %s", s)
+}
 
 var counter int
 
@@ -33,8 +59,25 @@ func nextToken(prefix string) string {
 }
 
 func main() {
+	keyName := flag.String("key", "j", "连发按键 (键名如 j/k/space，或 evdev code 如 36)")
+	interval := flag.Int("interval", 50, "连发间隔 (毫秒)")
+	flag.Parse()
+
+	keyCode, err := parseKey(*keyName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+		fmt.Fprintf(os.Stderr, "可用键名: ")
+		names := make([]string, 0, len(keyMap))
+		for k := range keyMap {
+			names = append(names, k)
+		}
+		fmt.Fprintf(os.Stderr, "%s\n", strings.Join(names, ", "))
+		os.Exit(1)
+	}
+
 	fmt.Println("tuborkey - 连发程序 (Portal/EI 方式)")
-	fmt.Println("按住 J 键触发连发，Ctrl+C 退出")
+	fmt.Printf("按键: %s (code %d), 间隔: %dms\n", strings.ToLower(*keyName), keyCode, *interval)
+	fmt.Println("按住按键触发连发，Ctrl+C 退出")
 	fmt.Println("---")
 
 	conn, err := dbus.ConnectSessionBus()
@@ -82,12 +125,12 @@ func main() {
 	done := make(chan struct{})
 	rf := &rapidFireCtrl{}
 
-	// 监听所有键盘设备的 J 键事件
+	// 监听所有键盘设备的按键事件
 	for _, dev := range kbdDevices {
-		go monitorKeyboard(dev, conn, sessionPath, done, rf)
+		go monitorKeyboard(dev, conn, sessionPath, done, rf, keyCode, *interval)
 	}
 
-	fmt.Println("按住 J 键开始连发...")
+	fmt.Printf("按住 %s 键开始连发...\n", strings.ToLower(*keyName))
 
 	<-sigCh
 	fmt.Println("\n退出")
@@ -102,7 +145,7 @@ type rapidFireCtrl struct {
 	stopCh chan struct{}
 }
 
-func (r *rapidFireCtrl) start(conn *dbus.Conn, sessionPath dbus.ObjectPath) {
+func (r *rapidFireCtrl) start(conn *dbus.Conn, sessionPath dbus.ObjectPath, keyCode uint32, intervalMs int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.active {
@@ -110,7 +153,7 @@ func (r *rapidFireCtrl) start(conn *dbus.Conn, sessionPath dbus.ObjectPath) {
 	}
 	r.active = true
 	r.stopCh = make(chan struct{})
-	go rapidFireLoop(conn, sessionPath, r.stopCh)
+	go rapidFireLoop(conn, sessionPath, r.stopCh, keyCode, intervalMs)
 }
 
 func (r *rapidFireCtrl) stop() {
@@ -145,8 +188,8 @@ func findKeyboardDevices() []string {
 	return devices
 }
 
-// monitorKeyboard 监听键盘设备的 J 键事件，按住时触发连发
-func monitorKeyboard(devicePath string, conn *dbus.Conn, sessionPath dbus.ObjectPath, done <-chan struct{}, rf *rapidFireCtrl) {
+// monitorKeyboard 监听键盘设备的按键事件，按住时触发连发
+func monitorKeyboard(devicePath string, conn *dbus.Conn, sessionPath dbus.ObjectPath, done <-chan struct{}, rf *rapidFireCtrl, keyCode uint32, intervalMs int) {
 	fd, err := syscall.Open(devicePath, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "打开 %s 失败: %v\n", devicePath, err)
@@ -179,23 +222,21 @@ func monitorKeyboard(devicePath string, conn *dbus.Conn, sessionPath dbus.Object
 		evCode := uint16(buf[18]) | uint16(buf[19])<<8
 		evValue := int32(buf[20]) | int32(buf[21])<<8 | int32(buf[22])<<16 | int32(buf[23])<<24
 
-		if evType == evKey && evCode == uint16(keyJ) {
+		if evType == evKey && evCode == uint16(keyCode) {
 			if evValue == 1 {
-				// J 按下
-				rf.start(conn, sessionPath)
-				fmt.Printf("[%s] J 按下 - 开始连发\n", time.Now().Format("15:04:05"))
+				rf.start(conn, sessionPath, keyCode, intervalMs)
+				fmt.Printf("[%s] 按下 - 开始连发\n", time.Now().Format("15:04:05"))
 			} else if evValue == 0 {
-				// J 松开
 				rf.stop()
-				fmt.Printf("[%s] J 松开 - 停止连发\n", time.Now().Format("15:04:05"))
+				fmt.Printf("[%s] 松开 - 停止连发\n", time.Now().Format("15:04:05"))
 			}
 		}
 	}
 }
 
-// rapidFireLoop 快速连发 J 键
-func rapidFireLoop(conn *dbus.Conn, sessionPath dbus.ObjectPath, stop <-chan struct{}) {
-	ticker := time.NewTicker(rapidFireMs * time.Millisecond)
+// rapidFireLoop 快速连发按键
+func rapidFireLoop(conn *dbus.Conn, sessionPath dbus.ObjectPath, stop <-chan struct{}, keyCode uint32, intervalMs int) {
+	ticker := time.NewTicker(time.Duration(intervalMs) * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -203,7 +244,7 @@ func rapidFireLoop(conn *dbus.Conn, sessionPath dbus.ObjectPath, stop <-chan str
 		case <-stop:
 			return
 		case <-ticker.C:
-			if err := sendKey(conn, sessionPath, keyJ); err != nil {
+			if err := sendKey(conn, sessionPath, keyCode); err != nil {
 				fmt.Fprintf(os.Stderr, "连发失败: %v\n", err)
 			}
 		}
