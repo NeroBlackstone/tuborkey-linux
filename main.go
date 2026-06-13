@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,6 +19,10 @@ const (
 	reqIface    = "org.freedesktop.portal.Request"
 
 	keyJ = 36 // evdev keycode
+
+	// evdev
+	evKey       = 0x01
+	rapidFireMs = 50 // 连发间隔 (毫秒)
 )
 
 var counter int
@@ -29,7 +34,7 @@ func nextToken(prefix string) string {
 
 func main() {
 	fmt.Println("tuborkey - 连发程序 (Portal/EI 方式)")
-	fmt.Println("每 3 秒自动按 J 键，Ctrl+C 退出")
+	fmt.Println("按住 J 键触发连发，Ctrl+C 退出")
 	fmt.Println("---")
 
 	conn, err := dbus.ConnectSessionBus()
@@ -60,22 +65,146 @@ func main() {
 	}
 	fmt.Println("Session 已启动!")
 
+	// 查找键盘设备
+	kbdDevices := findKeyboardDevices()
+	if len(kbdDevices) == 0 {
+		fmt.Fprintln(os.Stderr, "未找到键盘设备，请确认 /dev/input/ 权限")
+		os.Exit(1)
+	}
+	fmt.Printf("监听键盘设备:\n")
+	for _, d := range kbdDevices {
+		fmt.Printf("  %s\n", d)
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	ticker := time.NewTicker(3 * time.Second)
+	done := make(chan struct{})
+	rf := &rapidFireCtrl{}
+
+	// 监听所有键盘设备的 J 键事件
+	for _, dev := range kbdDevices {
+		go monitorKeyboard(dev, conn, sessionPath, done, rf)
+	}
+
+	fmt.Println("按住 J 键开始连发...")
+
+	<-sigCh
+	fmt.Println("\n退出")
+	close(done)
+	rf.stop()
+}
+
+// rapidFireCtrl 控制连发的启停
+type rapidFireCtrl struct {
+	mu     sync.Mutex
+	active bool
+	stopCh chan struct{}
+}
+
+func (r *rapidFireCtrl) start(conn *dbus.Conn, sessionPath dbus.ObjectPath) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.active {
+		return
+	}
+	r.active = true
+	r.stopCh = make(chan struct{})
+	go rapidFireLoop(conn, sessionPath, r.stopCh)
+}
+
+func (r *rapidFireCtrl) stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.active {
+		return
+	}
+	r.active = false
+	close(r.stopCh)
+}
+
+// findKeyboardDevices 从 /proc/bus/input/devices 查找键盘设备
+func findKeyboardDevices() []string {
+	data, err := os.ReadFile("/proc/bus/input/devices")
+	if err != nil {
+		return nil
+	}
+
+	var devices []string
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "H: Handlers=") && strings.Contains(line, "kbd") {
+			parts := strings.Fields(line)
+			for _, part := range parts {
+				if strings.HasPrefix(part, "event") {
+					devices = append(devices, "/dev/input/"+part)
+				}
+			}
+		}
+	}
+	return devices
+}
+
+// monitorKeyboard 监听键盘设备的 J 键事件，按住时触发连发
+func monitorKeyboard(devicePath string, conn *dbus.Conn, sessionPath dbus.ObjectPath, done <-chan struct{}, rf *rapidFireCtrl) {
+	fd, err := syscall.Open(devicePath, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "打开 %s 失败: %v\n", devicePath, err)
+		return
+	}
+	defer syscall.Close(fd)
+
+	// sizeof(struct input_event) on amd64 = 24 bytes
+	buf := make([]byte, 24)
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+
+		n, err := syscall.Read(fd, buf)
+		if err != nil || n < 24 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		// 解析 input_event (little-endian, amd64)
+		// offset 0-15: struct timeval (16 bytes)
+		// offset 16-17: type (uint16)
+		// offset 18-19: code (uint16)
+		// offset 20-23: value (int32)
+		evType := uint16(buf[16]) | uint16(buf[17])<<8
+		evCode := uint16(buf[18]) | uint16(buf[19])<<8
+		evValue := int32(buf[20]) | int32(buf[21])<<8 | int32(buf[22])<<16 | int32(buf[23])<<24
+
+		if evType == evKey && evCode == uint16(keyJ) {
+			if evValue == 1 {
+				// J 按下
+				rf.start(conn, sessionPath)
+				fmt.Printf("[%s] J 按下 - 开始连发\n", time.Now().Format("15:04:05"))
+			} else if evValue == 0 {
+				// J 松开
+				rf.stop()
+				fmt.Printf("[%s] J 松开 - 停止连发\n", time.Now().Format("15:04:05"))
+			}
+		}
+	}
+}
+
+// rapidFireLoop 快速连发 J 键
+func rapidFireLoop(conn *dbus.Conn, sessionPath dbus.ObjectPath, stop <-chan struct{}) {
+	ticker := time.NewTicker(rapidFireMs * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-sigCh:
-			fmt.Println("\n退出")
+		case <-stop:
 			return
 		case <-ticker.C:
 			if err := sendKey(conn, sessionPath, keyJ); err != nil {
-				fmt.Fprintf(os.Stderr, "按键失败: %v\n", err)
-			} else {
-				fmt.Printf("[%s] 按下 J\n", time.Now().Format("15:04:05"))
+				fmt.Fprintf(os.Stderr, "连发失败: %v\n", err)
 			}
 		}
 	}
