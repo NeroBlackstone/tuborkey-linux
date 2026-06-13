@@ -15,7 +15,7 @@ func main() {
 	lang := flag.String("lang", "en", "language: en (English) or zh (Chinese)")
 	keyName := flag.String("key", "j", "key to fire (e.g. j/k/space, or evdev code like 36)")
 	interval := flag.Int("interval", 50, "fire interval in milliseconds")
-	toggleName := flag.String("toggle", "0", "toggle hotkey (e.g. f1/scrolllock/0, or evdev code)")
+	toggleName := flag.String("toggle", "\\", "toggle hotkey (e.g. f1/scrolllock/\\, or evdev code)")
 	flag.Parse()
 
 	msg = getMsg(*lang)
@@ -28,7 +28,7 @@ func main() {
 		case "interval":
 			f.DefValue = "50"
 		case "toggle":
-			f.DefValue = "0"
+			f.DefValue = "\\"
 		}
 	})
 

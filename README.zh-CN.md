@@ -26,12 +26,12 @@ go build -o tuborkey ./src/...
 | `-lang` | `en` | 语言：`en` (English) 或 `zh` (中文) |
 | `-key` | `j` | 连发按键，支持键名 (j/k/space/enter 等) 或 evdev code (如 36) |
 | `-interval` | `50` | 连发间隔，单位毫秒 |
-| `-toggle` | `0` | 开关快捷键，支持键名 (f1/scrolllock/0 等) 或 evdev code |
+| `-toggle` | `\` | 开关快捷键，支持键名 (f1/scrolllock/\\ 等) 或 evdev code |
 
 ### 示例
 
 ```bash
-# 默认：0 键开关连发，按住 J 连发，50ms 间隔
+# 默认：\ 键开关连发，按住 J 连发，50ms 间隔
 ./tuborkey
 
 # F1 开关连发，按住 K 连发

@@ -28,12 +28,12 @@ Hold the configured key to trigger turbo-fire, release to stop. Press Ctrl+C to 
 | `-lang` | `en` | Language: `en` (English) or `zh` (Chinese) |
 | `-key` | `j` | Key to turbo-fire, supports key names (j/k/space/enter etc.) or evdev codes (e.g. 36) |
 | `-interval` | `50` | Turbo-fire interval in milliseconds |
-| `-toggle` | `0` | Toggle hotkey to enable/disable turbo-fire, supports key names (f1/scrolllock/0 etc.) or evdev codes |
+| `-toggle` | `\` | Toggle hotkey to enable/disable turbo-fire, supports key names (f1/scrolllock/\\ etc.) or evdev codes |
 
 ### Examples
 
 ```bash
-# Default: toggle with 0, turbo-fire J when held, 50ms interval
+# Default: toggle with \, turbo-fire J when held, 50ms interval
 ./tuborkey
 
 # Toggle with F1, turbo-fire K when held
